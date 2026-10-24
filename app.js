@@ -74,6 +74,11 @@ function applyTheme() {
 
 /* ---------- семья: профили детей, синхронизация ---------- */
 let FAMILY = { children: [], prizes: {}, pinSet: false, loaded: false };
+DATA.caseList.forEach(function (c) { if (!c.grade) c.grade = 6; });
+function applyGradeFilter() {
+  const g = activeGrade();
+  DATA.caseList = DATA.caseList.filter(function (c) { return (c.grade || 6) === g; });
+}
 let syncTimer = null;
 function famChild(id) { return (FAMILY.children || []).find(c => c.id === id); }
 function famProfileId(id) { return 'k' + id; }
@@ -82,6 +87,13 @@ function activeChild() {
   if (p && p.childId && famChild(p.childId)) return famChild(p.childId);
   return (FAMILY.children || [])[0] || null;
 }
+function activeGrade() {
+  const ch = activeChild();
+  const g = ch ? Number(ch.grade) : (P() && P().grade) || 6;
+  return [3, 4, 5, 6, 7, 8].indexOf(g) >= 0 ? g : 6;
+}
+function activeProduct() { return activeGrade() === 6 ? 'pole6' : 'pole14'; }
+function gradeCases() { return DATA.caseList.filter(c => (c.grade || 6) === activeGrade()); }
 function snapshotProfile(p) {
   const copy = {};
   ['points', 'problems', 'notes', 'bosses', 'earlyUnlock', 'letters', 'mysterySolved', 'solvedV1',
@@ -149,6 +161,7 @@ async function loadFamily() {
     const f = await PLATFORM.family();
     FAMILY = { children: f.children || [], prizes: f.prizes || {}, pinSet: !!f.pinSet, loaded: true };
     ensureFamilyProfiles();
+    applyGradeFilter();
     const ch = activeChild();
     if (ch) await pullProgress(ch.id);
     if (['', '#map', '#profile', '#cabinet', '#admin'].includes(location.hash)) route();
@@ -562,6 +575,7 @@ function route() {
   if (h === 'brief') { renderBrief(); return; }
   if (h === '' || h === 'map') renderMap();
   else if (h.startsWith('case/')) renderCase(h.split('/')[1]);
+  else if ((h === 'exam' || h === 'mystery') && activeGrade() !== 6) renderSoon();
   else if (h === 'exam') renderExam();
   else if (h === 'cabinet') renderCabinet();
   else if (h === 'mystery') renderMystery();
@@ -590,16 +604,18 @@ function headerHtml(active) {
   } else {
     safeBar = `<div class="safe-progress"><span>📦 Все ящики вскрыты — ты легенда экспедиции!</span></div>`;
   }
-  const links = [['map', '🗺️ Маршрут'], ['cabinet', '📊 Кабинет'], ['brief', '📣 Приказ'], ['exam', '📝 Штурм-контрольная'], ['mystery', '🗝️ Шифровка'], ['ach', '🏅 Награды']];
+  const linksAll = [['map', '🗺️ Маршрут'], ['cabinet', '📊 Кабинет'], ['brief', '📣 Приказ'], ['exam', '📝 Штурм-контрольная'], ['mystery', '🗝️ Шифровка'], ['ach', '🏅 Награды']];
+  const links = activeGrade() === 6 ? linksAll : linksAll.filter(x => x[0] !== 'exam' && x[0] !== 'mystery');
   const nav = links.map(([id, label]) => `<a href="#${id}" class="${active === id ? 'nav-on' : ''}">${label}</a>`).join('');
-  const tabs = [['map', '🗺️', 'Маршрут'], ['cabinet', '📊', 'Кабинет'], ['exam', '📝', 'Контрольная'], ['mystery', '🗝️', 'Шифровка'], ['ach', '🏅', 'Награды'], ['profile', '👤', 'Профиль']]
+  const tabsAll = [['map', '🗺️', 'Маршрут'], ['cabinet', '📊', 'Кабинет'], ['exam', '📝', 'Контрольная'], ['mystery', '🗝️', 'Шифровка'], ['ach', '🏅', 'Награды'], ['profile', '👤', 'Профиль']];
+  const tabs = (activeGrade() === 6 ? tabsAll : tabsAll.filter(t => t[0] !== 'exam' && t[0] !== 'mystery'))
     .map(([id, ico, label]) => `<a href="#${id}" class="${active === id ? 'on' : ''}"><span class="ico">${ico}</span><span>${label}</span></a>`).join('');
   const account = window.PLATFORM && PLATFORM.user
     ? `<a href="#profile" style="color:inherit">👤 ${esc(PLATFORM.user.name)}</a>`
     : `<a href="#" data-pf-act="login" style="color:inherit">Войти</a>`;
   return `
     <div class="topbar">
-      <span class="brand"><span class="em">❄️</span> Полюс-14</span>
+      <span class="brand"><span class="em">❄️</span> Полюс-14 · ${activeGrade()} класс</span>
       <span class="agent-chip">${p.emoji} <b>${esc(p.name)}</b> · ${titleFor(p.points)}</span>
       <span class="spacer"></span>
       <span class="agent-chip">${account}</span>
@@ -697,14 +713,19 @@ DATA.remoteStages = DATA.remoteStages || [];
 let remoteLoading = false;
 async function loadRemoteManifest() {
   if (!window.PLATFORM) return;
+  const product = activeProduct();
+  const grade = activeGrade();
   try {
-    const m = await PLATFORM.manifest('pole6');
-    DATA.remoteStages = (m.stages || []).filter(s => !DATA.caseList.some(c => c.id === s.id));
+    const m = await PLATFORM.manifest(product, grade);
+    DATA.remoteStages = (m.stages || []).filter(s => !DATA.caseList.some(c => String(c.id) === String(s.id) && (c.grade || 6) === grade));
+    DATA.remoteStages.forEach(s => { s.product = product; s.grade = grade; });
   } catch (e) { DATA.remoteStages = []; }
   if (location.hash === '' || location.hash === '#map' || location.hash === '#cabinet') route();
 }
 function remoteUnlocked(s) {
-  return !!(s.free || (window.PLATFORM && PLATFORM.has('pole6', s.id)));
+  if (s.free) return true;
+  if (!window.PLATFORM) return false;
+  return PLATFORM.hasGrade(s.product || activeProduct(), s.grade || activeGrade(), s.id);
 }
 function remoteCardHtml(s) {
   const unlocked = remoteUnlocked(s);
@@ -725,7 +746,7 @@ function remoteCardHtml(s) {
 async function openRemoteStage(id) {
   const local = DATA.caseList.find(c => c.id === id);
   if (local) { location.hash = '#case/' + id; route(); return; }
-  const ordered = DATA.caseList.slice().sort((a, b) => a.num - b.num)
+  const ordered = gradeCases().slice().sort((a, b) => a.num - b.num)
     .concat((DATA.remoteStages || []).filter(s => !DATA.caseList.some(c => c.id === s.id))
       .map(s => ({ id: s.id, num: Number(s.id), title: s.title }))
       .sort((a, b) => a.num - b.num));
@@ -743,10 +764,12 @@ async function openRemoteStage(id) {
   remoteLoading = true;
   showModal('<h2>Загружаю этап…</h2><p class="small">Тянем контент с сервера.</p>');
   try {
-    const d = await PLATFORM.stage('pole6', id);
+    const product = activeProduct();
+    const grade = activeGrade();
+    const d = await PLATFORM.stage(product, grade, id);
     const st = d.stage || {};
     if (!st.problems || !st.problems.length) throw new Error('Пустой этап');
-    const caseObj = Object.assign({}, st, { id: String(id), num: Number(id) || DATA.caseList.length + 1 });
+    const caseObj = Object.assign({}, st, { id: String(id), num: Number(id) || DATA.caseList.length + 1, grade: grade, product: product });
     DATA.caseList.push(caseObj);
     closeModal();
     location.hash = '#case/' + caseObj.id;
@@ -814,9 +837,11 @@ function junctionClaim(jid) {
 
 function renderMap() {
   const p = P();
+  const grade = activeGrade();
   if (window.PLATFORM && !DATA.remoteLoaded) { DATA.remoteLoaded = true; loadRemoteManifest(); }
   let cards = '';
   DATA.caseList.forEach((c, idx) => {
+    if ((c.grade || 6) !== grade) return;
     if (!caseUnlocked(idx)) {
       cards += `
       <div class="case-card">
@@ -859,7 +884,7 @@ function renderMap() {
     return `<div class="safe-box ${opened ? 'open' : ''}" title="${thr} 💰" ${opened ? `data-act="showSafe" data-arg="${i}"` : ''}>${opened ? '🎁' : '🔒'}</div>`;
   }).join('');
   $('app').innerHTML = headerHtml('map') + `
-    ${dayTaskCardHtml()}
+    ${grade === 6 ? dayTaskCardHtml() : ''}
     <p class="board-intro">Карта маршрута: теория → разборы → задачи → перевал, и дальше по льду. Ящики открываются сами, когда набираются монеты 💰.</p>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">${safesRow}</div>
     <div class="path">${cards}</div>
@@ -1358,7 +1383,7 @@ function cabWeek() {
   return out;
 }
 function cabStages() {
-  const local = DATA.caseList.slice().sort((a, b) => a.num - b.num)
+  const local = gradeCases().slice().sort((a, b) => a.num - b.num)
     .map(c => ({ id: c.id, num: c.num, title: c.title, local: true }));
   const remote = (DATA.remoteStages || []).filter(s => !DATA.caseList.some(c => c.id === s.id))
     .map(s => ({ id: s.id, num: Number(s.id), title: s.title, local: false, unlocked: s.unlocked }));
@@ -1390,7 +1415,7 @@ function cabStats() {
 }
 function cabTopics() {
   const p = P();
-  return DATA.caseList.slice().sort((a, b) => a.num - b.num).map(c => {
+  return gradeCases().slice().sort((a, b) => a.num - b.num).map(c => {
     let total = c.problems.length, solved = 0, clean = 0, hints = 0;
     c.problems.forEach(pr => {
       const e = p.problems[entryKey(c.id, pr.id)];
@@ -1449,6 +1474,7 @@ function renderCabinet() {
   const p = P();
   const tab = (store.ui && store.ui.cabinetTab) || 'child';
   const s = cabStats();
+  const bossesDone = gradeCases().filter(c => p.bosses[c.id] && p.bosses[c.id].done).length;
   const bars = s.week.map(x => `<div class="cab-bar ${x.min ? '' : 'zero'}"><b>${x.min || ''}</b><i style="height:${x.min ? Math.max(6, Math.round(x.min / Math.max(1, Math.max.apply(null, s.week.map(y => y.min))) * 100)) : 3}%"></i><span>${x.wd}</span></div>`).join('');
   const tabs = `<div class="cab-tabs">
     <button class="cab-tab ${tab === 'child' ? 'active' : ''}" data-act="cabTab" data-arg="child">Для полярника</button>
@@ -1551,8 +1577,11 @@ function renderCabinet() {
       <div class="cab-grid" style="margin-top:12px">
         <div class="cab-stat"><div class="k">Решено задач</div><div class="v">${s.solved}</div><div class="d">за неделю: +${s.weekSolved}</div></div>
         <div class="cab-stat"><div class="k">Без подсказок</div><div class="v">${s.clean}</div><div class="d">${s.independence}% от решённых</div></div>
+        ${activeGrade() === 6 ? `
         <div class="cab-stat"><div class="k">Контрольная</div><div class="v">${s.best === null || s.best === undefined ? '—' : s.best} <small>${s.best === null || s.best === undefined ? '' : 'из ' + DATA.exam.problems.length}</small></div><div class="d">${s.best >= 5 ? 'буква получена' : 'нужно 5 из 8'}</div></div>
-        <div class="cab-stat"><div class="k">Шифровка</div><div class="v">${s.letters} <small>из ${DATA.mystery.word.length}</small></div><div class="d ${s.letters < 3 ? 'warn' : ''}">${s.letters < 3 ? 'собирай буквы' : 'можно пробовать слово'}</div></div>
+        <div class="cab-stat"><div class="k">Шифровка</div><div class="v">${s.letters} <small>из ${DATA.mystery.word.length}</small></div><div class="d ${s.letters < 3 ? 'warn' : ''}">${s.letters < 3 ? 'собирай буквы' : 'можно пробовать слово'}</div></div>` : `
+        <div class="cab-stat"><div class="k">Перевалы</div><div class="v">${bossesDone} <small>из ${gradeCases().length}</small></div><div class="d">${bossesDone ? 'маршрут идёт' : 'впереди первый'}</div></div>
+        <div class="cab-stat"><div class="k">Награды</div><div class="v">${p.achievements.length} <small>из ${DATA.achievements.length}</small></div><div class="d">${p.achievements.length ? 'уже есть' : 'первая впереди'}</div></div>`}
       </div>
       <div class="cab-two" style="margin-top:12px">
         <div class="paper"><h4>Эта неделя</h4>
@@ -1627,7 +1656,7 @@ function renderProfilePage() {
         </select>
         <button class="gold" data-act="famAdd">Добавить профиль</button>
       </div>
-      <p class="small muted" style="margin-top:8px">Класс определяет маршрут ребёнка. Сейчас готов шестой класс; остальные появятся по мере выпуска.</p>
+      <p class="small muted" style="margin-top:8px">Класс определяет маршрут ребёнка. Для 6 класса открыт весь маршрут; для остальных классов этапы открываются по мере выпуска.</p>
     </div>` : ''}
     <div class="paper">
       <h4>Оформление штаба</h4>
@@ -1707,6 +1736,17 @@ function adminNotesHtml() {
   });
   return rows.length ? rows.join('') : '<p class="small">Пока ни одной записи: полярник ещё не писал(а) ход мысли в блокноты задач.</p>';
 }
+function renderSoon() {
+  const g = activeGrade();
+  $('app').innerHTML = headerHtml('map') + `
+    <div class="paper" style="text-align:center">
+      <h4>Раздел появится вместе с программой класса</h4>
+      <p>Для ${g} класса сейчас открыт первый этап. Контрольная и шифровка появятся, когда будет готов весь маршрут этого класса.</p>
+      <button class="gold" data-act="goto" data-arg="#map">К маршруту</button>
+    </div>
+    ${footerHtml()}`;
+}
+
 function renderAdminServer() {
   const top = `<div class="topbar"><span class="brand"><span class="em">🔑</span> Родителям</span><span class="spacer"></span><a href="#map" class="small">← назад</a></div>`;
   const child = activeChild();
@@ -1941,7 +1981,10 @@ document.addEventListener('click', (ev) => {
     case 'famSwitch': {
       store.currentId = famProfileId(arg);
       saveStore();
-      pullProgress(arg).then(function () { location.hash = 'map'; route(); toast('Профиль: ' + ((famChild(arg) || {}).name || '')); });
+      pullProgress(arg).then(function () {
+        toast('Профиль: ' + ((famChild(arg) || {}).name || ''));
+        location.replace(location.pathname + '?cb=' + Date.now() + '#map');
+      });
       break;
     }
     case 'famAdd': {
