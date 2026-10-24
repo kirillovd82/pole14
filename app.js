@@ -135,7 +135,9 @@ function ensureFamilyProfiles() {
     }
   }
   const curProf = store.profiles[store.currentId];
-  if (first && (!curProf || !curProf.childId)) store.currentId = famProfileId(first.id);
+  if (first && (!curProf || !curProf.childId || !famChild(curProf.childId))) {
+    store.currentId = famProfileId(first.id);
+  }
   saveStore();
 }
 async function pullProgress(childId) {
