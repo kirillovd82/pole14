@@ -38,7 +38,10 @@ function loadStore() {
   } catch (e) { /* повреждённые данные — начинаем с чистого листа */ }
   return { profiles: {}, currentId: null, admin: { pin: null, prizes: {} }, ui: { theme: 'desk' } };
 }
-function saveStore() { localStorage.setItem(STORE_KEY, JSON.stringify(store)); }
+function saveStore() {
+  localStorage.setItem(STORE_KEY, JSON.stringify(store));
+  if (typeof scheduleSync === 'function') scheduleSync();
+}
 function P() { return store.profiles[store.currentId] || null; }
 function newProfile(name, emoji) {
   const id = 'p' + Date.now();
@@ -67,6 +70,106 @@ function applyTheme() {
   store.ui = store.ui || {};
   if (!['desk', 'night', 'day'].includes(store.ui.theme)) store.ui.theme = 'desk';
   document.body.dataset.theme = store.ui.theme;
+}
+
+/* ---------- семья: профили детей, синхронизация ---------- */
+let FAMILY = { children: [], prizes: {}, pinSet: false, loaded: false };
+let syncTimer = null;
+function famChild(id) { return (FAMILY.children || []).find(c => c.id === id); }
+function famProfileId(id) { return 'k' + id; }
+function activeChild() {
+  const p = P();
+  if (p && p.childId && famChild(p.childId)) return famChild(p.childId);
+  return (FAMILY.children || [])[0] || null;
+}
+function snapshotProfile(p) {
+  const copy = {};
+  ['points', 'problems', 'notes', 'bosses', 'earlyUnlock', 'letters', 'mysterySolved', 'solvedV1',
+    'achievements', 'activity', 'views', 'exam', 'safesOpened', 'junctions', 'time', 'flame',
+    'history', 'attempts', 'recent', 'sheinLetters', 'briefed'].forEach(k => {
+    if (p[k] !== undefined) copy[k] = p[k];
+  });
+  return copy;
+}
+function ensureFamilyProfiles() {
+  (FAMILY.children || []).forEach(ch => {
+    const id = famProfileId(ch.id);
+    let p = store.profiles[id];
+    if (!p) {
+      p = {
+        name: ch.name, emoji: '🧭', created: today(), briefed: true,
+        points: 0, problems: {}, notes: {}, bosses: {}, earlyUnlock: {},
+        letters: [], mysterySolved: false, mysteryV2: true, junctions: {}, time: {},
+        achievements: [], activity: [], views: {},
+        exam: { best: null, started: null, answers: {}, submitted: false },
+        safesOpened: [], childId: ch.id, grade: ch.grade, serverRev: 0, syncedAt: null
+      };
+      store.profiles[id] = p;
+    } else {
+      p.name = ch.name;
+      p.childId = ch.id;
+      p.grade = ch.grade;
+    }
+  });
+  const first = (FAMILY.children || [])[0];
+  if (first && FAMILY.children.length === 1) {
+    const target = store.profiles[famProfileId(first.id)];
+    const legacy = Object.keys(store.profiles).map(k => store.profiles[k])
+      .find(x => !x.childId && (x.points > 0 || Object.keys(x.problems || {}).length > 0));
+    if (target && (target.serverRev || 0) === 0 && !Object.keys(target.problems || {}).length && legacy) {
+      Object.assign(target, snapshotProfile(legacy));
+      target.childId = first.id;
+      target.grade = first.grade;
+    }
+  }
+  const curProf = store.profiles[store.currentId];
+  if (first && (!curProf || !curProf.childId)) store.currentId = famProfileId(first.id);
+  saveStore();
+}
+async function pullProgress(childId) {
+  if (!window.PLATFORM || !PLATFORM.user) return false;
+  const id = famProfileId(childId);
+  const p = store.profiles[id];
+  if (!p) return false;
+  try {
+    const d = await PLATFORM.getProgress(childId);
+    if (d.rev > (p.serverRev || 0) && d.data) {
+      Object.keys(d.data).forEach(k => { p[k] = d.data[k]; });
+      p.serverRev = d.rev;
+      p.syncedAt = Date.now();
+      saveStore();
+      return true;
+    }
+  } catch (e) { /* офлайн — работаем на локальных данных */ }
+  return false;
+}
+async function loadFamily() {
+  if (!window.PLATFORM || !PLATFORM.user) { FAMILY.loaded = false; return; }
+  try {
+    const f = await PLATFORM.family();
+    FAMILY = { children: f.children || [], prizes: f.prizes || {}, pinSet: !!f.pinSet, loaded: true };
+    ensureFamilyProfiles();
+    const ch = activeChild();
+    if (ch) await pullProgress(ch.id);
+    if (['', '#map', '#profile', '#cabinet', '#admin'].includes(location.hash)) route();
+  } catch (e) { FAMILY.loaded = false; }
+}
+function scheduleSync() {
+  if (!window.PLATFORM || !PLATFORM.user) return;
+  const p = P();
+  if (!p || !p.childId) return;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(pushProgress, 2500);
+}
+async function pushProgress() {
+  const p = P();
+  if (!window.PLATFORM || !PLATFORM.user || !p || !p.childId) return;
+  try {
+    const d = await PLATFORM.putProgress(p.childId, snapshotProfile(p), p.serverRev || 0);
+    if (d && d.rev) { p.serverRev = d.rev; p.syncedAt = Date.now(); localStorage.setItem(STORE_KEY, JSON.stringify(store)); }
+  } catch (e) {
+    if (e.status === 409) await pullProgress(p.childId);
+  }
 }
 const THEMES = [
   { id: 'desk', name: 'Светлая', desc: 'основной вид, как в приложении', colors: ['#f2f4f7', '#ffffff', '#2f6fd0'] },
@@ -361,7 +464,13 @@ function checkSafes() {
   if (safeModalQueue.length) showNextSafe();
 }
 function safePrize(i) {
-  const custom = store.admin.prizes[i];
+  let custom = null;
+  if (window.PLATFORM && PLATFORM.user) {
+    const ch = activeChild();
+    const box = ch && FAMILY.prizes && FAMILY.prizes[ch.id];
+    custom = box && box[i];
+  }
+  if (!custom || !custom.text) custom = store.admin.prizes[i];
   return custom && custom.text ? custom : { text: 'Приз №' + (i + 1) + ' — подойди к родителям за получением!', img: '' };
 }
 function showNextSafe() {
@@ -1347,8 +1456,21 @@ function renderCabinet() {
   </div>`;
 
   let body = '';
-  if (tab === 'parent' && !store.adminAuthed) {
-    if (!store.admin.pin) {
+  const serverParent = !!(window.PLATFORM && PLATFORM.user);
+  const parentOk = serverParent ? !!PLATFORM.parentToken() : store.adminAuthed;
+  if (tab === 'parent' && !parentOk) {
+    if (serverParent) {
+      if (!FAMILY.pinSet) {
+        body = `<div class="paper cab-pin"><h4>Родительский режим закрыт</h4>
+          <p>Сначала задайте PIN на странице <a href="#admin">🔑 Родителям</a> — он защитит статистику от любопытных.</p></div>`;
+      } else {
+        body = `<div class="paper cab-pin"><h4>Введите PIN</h4>
+          <p class="small">Родительский режим: время, темы и записи рассуждений.</p>
+          <div class="answer-row" style="justify-content:center"><input type="password" id="cab-pin" maxlength="4" placeholder="PIN"><button class="gold" data-act="cabPinSrv">Войти</button></div>
+          <div id="cab-pin-res"></div>
+          <p class="small muted" style="margin-top:8px">Забыли PIN? <a href="#admin">Восстановить</a></p></div>`;
+      }
+    } else if (!store.admin.pin) {
       body = `<div class="paper cab-pin"><h4>Родительский режим закрыт</h4>
         <p>Сначала задайте PIN на странице <a href="#admin">🔑 Родителям</a> — он защитит статистику от любопытных.</p></div>`;
     } else {
@@ -1490,8 +1612,23 @@ function renderProfilePage() {
     <div class="paper">
       <h4>Аккаунт полярника</h4>
       ${window.PLATFORM ? PLATFORM.panelHtml() : '<p class="small muted">Аккаунты не подключены.</p>'}
-      <p class="small muted" style="margin-top:8px">Один аккаунт работает во всех наших тренажёрах: «Полюс-14», «Агентство „Логика“», «Престол эпох».</p>
+      <p class="small muted" style="margin-top:8px">Один аккаунт — на всю семью: дети играют, родители открывают свой режим по PIN.</p>
     </div>
+    ${window.PLATFORM && PLATFORM.user ? `
+    <div class="paper">
+      <h4>Профили детей</h4>
+      <div class="answer-row" style="margin-bottom:8px">
+        ${(FAMILY.children || []).map(ch => `<button class="${p.childId === ch.id ? 'gold' : 'ghost'}" data-act="famSwitch" data-arg="${ch.id}">${esc(ch.name)} · ${ch.grade} класс</button>`).join(' ') || '<span class="small muted">Пока нет профилей.</span>'}
+      </div>
+      <div class="answer-row">
+        <input type="text" id="fam-name" maxlength="20" placeholder="Имя ребёнка" style="flex:1;min-width:150px">
+        <select id="fam-grade" style="min-height:44px;border-radius:12px;padding:0 10px;font:inherit;background:var(--row-bg);border:1px solid transparent">
+          ${[3,4,5,6,7,8].map(g => `<option value="${g}" ${(p.grade || 6) === g ? 'selected' : ''}>${g} класс</option>`).join('')}
+        </select>
+        <button class="gold" data-act="famAdd">Добавить профиль</button>
+      </div>
+      <p class="small muted" style="margin-top:8px">Класс определяет маршрут ребёнка. Сейчас готов шестой класс; остальные появятся по мере выпуска.</p>
+    </div>` : ''}
     <div class="paper">
       <h4>Оформление штаба</h4>
       <p class="small">Выбери, как выглядит штаб экспедиции. Менять можно в любой момент.</p>
@@ -1570,7 +1707,83 @@ function adminNotesHtml() {
   });
   return rows.length ? rows.join('') : '<p class="small">Пока ни одной записи: полярник ещё не писал(а) ход мысли в блокноты задач.</p>';
 }
+function renderAdminServer() {
+  const top = `<div class="topbar"><span class="brand"><span class="em">🔑</span> Родителям</span><span class="spacer"></span><a href="#map" class="small">← назад</a></div>`;
+  const child = activeChild();
+  const childName = child ? esc(child.name) + ' · ' + child.grade + ' класс' : 'профиль не выбран';
+
+  if (!FAMILY.loaded) {
+    $('app').innerHTML = top + `<div class="admin-box"><h3>Загружаю данные семьи…</h3><p class="small">Если не открывается — проверьте интернет.</p></div>`;
+    loadFamily();
+    return;
+  }
+  if (!FAMILY.pinSet) {
+    $('app').innerHTML = top + `
+      <div class="admin-box">
+        <h3>Задайте родительский PIN</h3>
+        <p class="small">PIN защищает статистику и призы. Он хранится в аккаунте, поэтому работает на всех устройствах.</p>
+        <div class="answer-row"><input type="password" id="srv-pass" placeholder="Пароль аккаунта" style="flex:1;min-width:170px"><input type="password" id="srv-pin1" maxlength="4" placeholder="PIN"><input type="password" id="srv-pin2" maxlength="4" placeholder="ещё раз"><button class="gold" data-act="pinSrvSet">Сохранить</button></div>
+        <div id="pin-res"></div>
+        <p class="small muted">Пароль нужен, чтобы PIN не мог поставить ребёнок, оставшийся за компьютером.</p>
+      </div>
+      <footer class="site-foot">${DATA.credits}</footer>`;
+    return;
+  }
+  if (!window.PLATFORM.parentToken()) {
+    $('app').innerHTML = top + `
+      <div class="admin-box">
+        <h3>Введите PIN</h3>
+        <p class="small">Профиль: <b>${childName}</b></p>
+        <div class="answer-row"><input type="password" id="srv-pin" maxlength="4" placeholder="PIN"><button class="gold" data-act="pinSrvVerify">Войти</button></div>
+        <div id="pin-res"></div>
+      </div>
+      <div class="admin-box">
+        <h3>Забыли PIN?</h3>
+        <p class="small">Понадобятся пароль аккаунта и код восстановления — тот, что выдали при регистрации. Забыли и код? Сначала восстановите пароль аккаунта на странице входа.</p>
+        <div class="answer-row"><input type="email" id="srv-email" placeholder="Почта" value="${esc(PLATFORM.user.email)}" style="flex:1;min-width:170px"></div>
+        <div class="answer-row"><input type="password" id="srv-rpass" placeholder="Пароль аккаунта" style="flex:1;min-width:170px"><input type="text" id="srv-code" placeholder="Код восстановления" style="flex:1;min-width:150px"></div>
+        <div class="answer-row"><input type="password" id="srv-newpin" maxlength="4" placeholder="Новый PIN"><button class="gold" data-act="pinSrvReset">Сменить PIN</button></div>
+      </div>
+      <footer class="site-foot">${DATA.credits}</footer>`;
+    return;
+  }
+
+  const prizes = (FAMILY.prizes && child && FAMILY.prizes[child.id]) || {};
+  const prizeRows = DATA.safes.map((thr, i) => {
+    const pr = prizes[i] || {};
+    return `<div class="prize-row">
+      <span class="thr">Ящик №${i + 1}<br><small>${thr} 💰</small></span>
+      <input type="text" data-prize="${i}" value="${esc(pr.text || '')}" placeholder="Например: поход в кино / 300 ₽ / выбор десерта">
+      <input type="text" data-prizeimg="${i}" value="${esc(pr.img || '')}" placeholder="ссылка на картинку (необязательно)">
+    </div>`;
+  }).join('');
+  $('app').innerHTML = top + `
+    <div class="admin-box">
+      <h3>Родительский режим · ${childName}</h3>
+      <p class="small">PIN подтверждён. Призы хранятся в аккаунте и видны на всех устройствах.</p>
+      <div class="answer-row"><button class="ghost" data-act="pinSrvLogout">Выйти из родительского режима</button></div>
+    </div>
+    <div class="admin-box">
+      <h3>Призы в ящиках</h3>
+      <p class="small">Сейф открывается сам, когда ребёнок набирает указанные монеты. Пустое поле = нейтральная надпись «получи у родителей».</p>
+      ${prizeRows}
+      <div class="answer-row"><button class="gold" data-act="prizeSrvSave">Сохранить призы</button><span id="prizes-res"></span></div>
+    </div>
+    <div class="admin-box"><h3>Записи агента</h3>${adminNotesHtml()}</div>
+    <div class="admin-box"><h3>Отчёт за неделю</h3>${weekReportHtml()}</div>
+    <div class="admin-box">
+      <h3>Полезно знать</h3>
+      <ul class="small">
+        <li>PIN хранится в аккаунте; восстановление — по паролю и коду восстановления.</li>
+        <li>Подсказки не наказание: с одной наводкой задача даёт ⅔ монет, с двумя — треть.</li>
+        <li>Звание растёт: ${DATA.titles.map(t => t.name + ' (' + t.min + '💰)').join(' → ')}.</li>
+      </ul>
+    </div>
+    <footer class="site-foot">${DATA.credits}</footer>`;
+}
+
 function renderAdmin() {
+  if (window.PLATFORM && PLATFORM.user) { renderAdminServer(); return; }
   const pin = store.admin.pin;
   if (pin === null) {
     $('app').innerHTML = `
@@ -1725,6 +1938,82 @@ document.addEventListener('click', (ev) => {
     case 'cabPin': cabPinCheck(); break;
     case 'cabPrint': window.print(); break;
     case 'cabGo': location.hash = arg.replace(/^#/, ''); route(); break;
+    case 'famSwitch': {
+      store.currentId = famProfileId(arg);
+      saveStore();
+      pullProgress(arg).then(function () { location.hash = 'map'; route(); toast('Профиль: ' + ((famChild(arg) || {}).name || '')); });
+      break;
+    }
+    case 'famAdd': {
+      const nm = ($('fam-name') || {}).value || '';
+      const gr = parseInt(($('fam-grade') || {}).value || '6', 10);
+      if (!nm.trim()) { toast('Впиши имя ребёнка'); break; }
+      PLATFORM.addChild(nm.trim(), gr).then(function () {
+        return loadFamily();
+      }).then(function () {
+        toast('Профиль добавлен');
+        renderProfilePage();
+      }).catch(function (e) { toast(e.message || 'Не удалось добавить профиль'); });
+      break;
+    }
+    case 'pinSrvSet': {
+      const pass = ($('srv-pass') || {}).value || '';
+      const a = ($('srv-pin1') || {}).value || '';
+      const b = ($('srv-pin2') || {}).value || '';
+      if (!/^\d{4}$/.test(a) || a !== b) { $('pin-res').innerHTML = '<span class="result-bad">PIN — 4 цифры в обоих полях.</span>'; break; }
+      PLATFORM.setPin(pass, a).then(function () { return PLATFORM.verifyPin(a); }).then(function () {
+        FAMILY.pinSet = true;
+        toast('PIN установлен');
+        renderAdmin();
+      }).catch(function (e) { $('pin-res').innerHTML = '<span class="result-bad">' + esc(e.message || 'Не получилось') + '</span>'; });
+      break;
+    }
+    case 'pinSrvVerify': {
+      const pin = ($('srv-pin') || {}).value || '';
+      PLATFORM.verifyPin(pin).then(function () {
+        FAMILY.pinSet = true;
+        renderAdmin();
+      }).catch(function (e) { $('pin-res').innerHTML = '<span class="result-bad">' + esc(e.message || 'Неверный PIN') + '</span>'; });
+      break;
+    }
+    case 'pinSrvReset': {
+      const em = ($('srv-email') || {}).value || '';
+      const pass = ($('srv-rpass') || {}).value || '';
+      const code = ($('srv-code') || {}).value || '';
+      const np = ($('srv-newpin') || {}).value || '';
+      if (!/^\d{4}$/.test(np)) { $('pin-res').innerHTML = '<span class="result-bad">Новый PIN — 4 цифры.</span>'; break; }
+      PLATFORM.resetPin(em.trim(), pass, code.trim(), np).then(function () {
+        toast('PIN изменён — войдите с новым');
+        renderAdmin();
+      }).catch(function (e) { $('pin-res').innerHTML = '<span class="result-bad">' + esc(e.message || 'Не получилось') + '</span>'; });
+      break;
+    }
+    case 'pinSrvLogout': PLATFORM.parentLogout(); renderAdmin(); break;
+    case 'prizeSrvSave': {
+      const ch = activeChild();
+      if (!ch) break;
+      const obj = {};
+      document.querySelectorAll('[data-prize]').forEach(function (inp) {
+        obj[inp.dataset.prize] = { text: inp.value.trim(), img: '' };
+      });
+      document.querySelectorAll('[data-prizeimg]').forEach(function (inp) {
+        const i = inp.dataset.prizeimg;
+        obj[i] = obj[i] || { text: '', img: '' };
+        obj[i].img = inp.value.trim();
+      });
+      PLATFORM.savePrizes(ch.id, obj).then(function () {
+        FAMILY.prizes[ch.id] = obj;
+        $('prizes-res').innerHTML = '<span class="result-ok">Сохранено ✓</span>';
+      }).catch(function (e) { $('prizes-res').innerHTML = '<span class="result-bad">' + esc(e.message || 'Не сохранилось') + '</span>'; });
+      break;
+    }
+    case 'cabPinSrv': {
+      const pin = ($('cab-pin') || {}).value || '';
+      PLATFORM.verifyPin(pin).then(function () { renderCabinet(); }).catch(function (e) {
+        $('cab-pin-res').innerHTML = '<span class="result-bad">' + esc(e.message || 'Неверный PIN') + '</span>';
+      });
+      break;
+    }
     case 'hint': { const [cid, pid, lvl] = arg.split('|'); hintPressed(cid, pid, +lvl); break; }
     case 'viewSolution': { const [cid, pid] = arg.split('|'); solutionPressed(cid, pid); break; }
     case 'confirmSolution': { const [cid, pid] = arg.split('|'); confirmSolution(cid, pid); break; }
@@ -1880,6 +2169,10 @@ setInterval(function () {
   } catch (e) { /* не мешаем игре */ }
 }, 30000);
 window.onPlatformChange = function () {
-  if (window.PLATFORM) PLATFORM.refresh().then(function () { loadRemoteManifest(); route(); });
+  if (!window.PLATFORM) return;
+  PLATFORM.refresh().then(function () { loadFamily(); loadRemoteManifest(); route(); });
 };
-if (window.PLATFORM) { loadRemoteManifest(); PLATFORM.refresh(); }
+if (window.PLATFORM) {
+  PLATFORM.refresh().then(function () { loadFamily(); });
+  loadRemoteManifest();
+}
