@@ -162,6 +162,9 @@ async function loadFamily() {
     FAMILY = { children: f.children || [], prizes: f.prizes || {}, pinSet: !!f.pinSet, loaded: true };
     ensureFamilyProfiles();
     applyGradeFilter();
+    DATA.remoteStages = [];
+    DATA.remoteLoaded = false;
+    await loadRemoteManifest();
     const ch = activeChild();
     if (ch) await pullProgress(ch.id);
     if (['', '#map', '#profile', '#cabinet', '#admin'].includes(location.hash)) route();
@@ -881,7 +884,8 @@ function renderMap() {
     if (j && st.boss) cards += junctionCardHtml(j);
   });
   (DATA.remoteStages || []).forEach(s => {
-    if (DATA.caseList.some(c => c.id === s.id)) return;
+    if ((s.grade || 6) !== grade) return;
+    if (DATA.caseList.some(c => String(c.id) === String(s.id) && (c.grade || 6) === grade)) return;
     cards += remoteCardHtml(s);
   });
   const safesRow = DATA.safes.map((thr, i) => {
@@ -893,10 +897,10 @@ function renderMap() {
     <p class="board-intro">Карта маршрута: теория → разборы → задачи → перевал, и дальше по льду. Ящики открываются сами, когда набираются монеты 💰.</p>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">${safesRow}</div>
     <div class="path">${cards}</div>
-    <div class="paper">
+    ${grade === 6 ? `<div class="paper">
       <h4>Штурм-контрольная 📝</h4>
       <p>Когда почувствуешь силу — проверь себя: 8 задач, 90 минут, без наводок. <a href="#exam">В штурманскую рубку</a>.</p>
-    </div>
+    </div>` : ''}
     ${footerHtml()}`;
 }
 
