@@ -1667,6 +1667,14 @@ function renderProfilePage() {
         </select>
         <button class="gold" data-act="famAdd">Добавить профиль</button>
       </div>
+      ${activeChild() ? `<div class="answer-row" style="margin-top:8px">
+        <span class="small muted">Текущий профиль:</span>
+        <input type="text" id="fam-edit-name" maxlength="20" value="${esc(activeChild().name)}" style="flex:1;min-width:130px">
+        <select id="fam-edit-grade" style="min-height:44px;border-radius:12px;padding:0 10px;font:inherit;background:var(--row-bg);border:1px solid transparent">
+          ${[3,4,5,6,7,8].map(g => `<option value="${g}" ${activeChild().grade === g ? 'selected' : ''}>${g} класс</option>`).join('')}
+        </select>
+        <button class="ghost" data-act="famSave">Сохранить</button>
+      </div>` : ''}
       <p class="small muted" style="margin-top:8px">Класс определяет маршрут ребёнка. Для 6 класса открыт весь маршрут; для остальных классов этапы открываются по мере выпуска.</p>
     </div>` : ''}
     <div class="paper">
@@ -1996,6 +2004,20 @@ document.addEventListener('click', (ev) => {
         toast('Профиль: ' + ((famChild(arg) || {}).name || ''));
         location.replace(location.pathname + '?cb=' + Date.now() + '#map');
       });
+      break;
+    }
+    case 'famSave': {
+      const ch = activeChild();
+      if (!ch) break;
+      const nm = ($('fam-edit-name') || {}).value || '';
+      const gr = parseInt(($('fam-edit-grade') || {}).value || ch.grade, 10);
+      if (!nm.trim()) { toast('Впиши имя ребёнка'); break; }
+      PLATFORM.editChild(ch.id, { name: nm.trim(), grade: gr }).then(function () {
+        toast('Профиль обновлён');
+        return loadFamily();
+      }).then(function () {
+        location.reload();
+      }).catch(function (e) { toast(e.message || 'Не удалось сохранить'); });
       break;
     }
     case 'famAdd': {
