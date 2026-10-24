@@ -47,8 +47,8 @@
     },
     onChange: null,
 
-    register: async function (email, password, name) {
-      const d = await api('/auth/register', { method: 'POST', body: { email: email, password: password, name: name } });
+    register: async function (email, password, name, grade) {
+      const d = await api('/auth/register', { method: 'POST', body: { email: email, password: password, name: name, grade: grade || 6 } });
       setToken(d.token); setUser(d.user);
       if (this.onChange) this.onChange(d.user);
       return d;
@@ -94,8 +94,20 @@
       if (!u || !u.ent) return false;
       return u.ent.indexOf(product + ':all') >= 0 || u.ent.indexOf(product + ':' + stage) >= 0;
     },
-    manifest: function (product) { return api('/manifest?product=' + encodeURIComponent(product) + '&t=' + Date.now()); },
-    stage: function (product, id) { return api('/stage?product=' + encodeURIComponent(product) + '&id=' + encodeURIComponent(id) + '&t=' + Date.now()); },
+    manifest: function (product, grade) {
+      return api('/manifest?product=' + encodeURIComponent(product) + (grade ? '&grade=' + grade : '') + '&t=' + Date.now());
+    },
+    stage: function (product, grade, id) {
+      return api('/stage?product=' + encodeURIComponent(product) + (grade ? '&grade=' + grade : '') + '&id=' + encodeURIComponent(id) + '&t=' + Date.now());
+    },
+    hasGrade: function (product, grade, stage) {
+      const u = getUser();
+      if (!u || !u.ent) return false;
+      const g = Number(grade) || 6;
+      if (u.ent.indexOf('pole14:' + g + ':all') >= 0 || u.ent.indexOf('pole14:' + g + ':' + stage) >= 0) return true;
+      if (g === 6 && (u.ent.indexOf('pole6:all') >= 0 || u.ent.indexOf('pole6:' + stage) >= 0)) return true;
+      return false;
+    },
 
     /* ---------- семья ---------- */
     parentToken: function () {
@@ -158,6 +170,9 @@
         '<label class="pf-label">Почта</label><input class="pf-input" id="pf-email" type="email" autocomplete="email" placeholder="name@example.com">' +
         '<label class="pf-label">Имя в игре</label>' +
         (m === 'register' ? '<input class="pf-input" id="pf-name" maxlength="30" placeholder="Например, Милла">' : '') +
+        (m === 'register' ? '<label class="pf-label">Класс</label><select class="pf-input" id="pf-grade">' +
+          [3,4,5,6,7,8].map(function(g){ return '<option value="' + g + '"' + (g === 6 ? ' selected' : '') + '>' + g + ' класс</option>'; }).join('') +
+          '</select>' : '') +
         (m === 'recover' ? '<label class="pf-label">Код восстановления</label><input class="pf-input" id="pf-code" placeholder="XXXXX-XXXXX">' : '') +
         '<label class="pf-label">' + (m === 'recover' ? 'Новый пароль' : 'Пароль') + '</label>' +
         '<input class="pf-input" id="pf-pass" type="password" autocomplete="' + (m === 'register' ? 'new-password' : 'current-password') + '" placeholder="минимум 8 символов">' +
@@ -297,12 +312,13 @@
       const email = (document.getElementById('pf-email') || {}).value || '';
       const pass = (document.getElementById('pf-pass') || {}).value || '';
       const name = (document.getElementById('pf-name') || {}).value || '';
+      const grade = parseInt((document.getElementById('pf-grade') || {}).value || '6', 10);
       const code = (document.getElementById('pf-code') || {}).value || '';
       err('');
       el.disabled = true;
       try {
         let d;
-        if (mode === 'register') d = await PLATFORM.register(email.trim(), pass, name.trim());
+        if (mode === 'register') d = await PLATFORM.register(email.trim(), pass, name.trim(), grade);
         else if (mode === 'recover') d = await PLATFORM.recover(email.trim(), code.trim(), pass);
         else d = await PLATFORM.login(email.trim(), pass);
         if (d && d.recoveryCode) { PLATFORM.showRecovery(d.recoveryCode); }
