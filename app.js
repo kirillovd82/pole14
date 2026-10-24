@@ -643,6 +643,11 @@ function renderProfiles() {
     <p class="board-intro">Математическая экспедиция к полюсу. Выбери полярника — или заведи нового.</p>
     <div class="profile-grid">${list || '<span class="muted">Пока никто не записан в экспедицию.</span>'}</div>
     <div class="paper" style="max-width:460px">
+      <h4>Уже есть аккаунт?</h4>
+      <p class="small">Войдите, чтобы подтянуть профили детей и прогресс с другого устройства.</p>
+      <div class="answer-row"><button class="gold" data-pf-act="login">Войти в аккаунт</button></div>
+    </div>
+    <div class="paper" style="max-width:460px">
       <h4>Новый полярник</h4>
       <p class="small">Как тебя записать в бортовом журнале?</p>
       <input type="text" id="np-name" maxlength="20" placeholder="Имя полярника" style="width:100%">
