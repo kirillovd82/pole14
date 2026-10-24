@@ -172,19 +172,28 @@ async function loadFamily() {
     if (['', '#map', '#profile', '#cabinet', '#admin'].includes(location.hash)) route();
   } catch (e) { FAMILY.loaded = false; }
 }
+let lastSyncPayload = '';
 function scheduleSync() {
   if (!window.PLATFORM || !PLATFORM.user) return;
   const p = P();
   if (!p || !p.childId) return;
   if (syncTimer) clearTimeout(syncTimer);
-  syncTimer = setTimeout(pushProgress, 2500);
+  syncTimer = setTimeout(pushProgress, 30000);
 }
 async function pushProgress() {
   const p = P();
   if (!window.PLATFORM || !PLATFORM.user || !p || !p.childId) return;
+  const payload = snapshotProfile(p);
+  const raw = JSON.stringify(payload);
+  if (raw === lastSyncPayload) return;
   try {
-    const d = await PLATFORM.putProgress(p.childId, snapshotProfile(p), p.serverRev || 0);
-    if (d && d.rev) { p.serverRev = d.rev; p.syncedAt = Date.now(); localStorage.setItem(STORE_KEY, JSON.stringify(store)); }
+    const d = await PLATFORM.putProgress(p.childId, payload, p.serverRev || 0);
+    if (d && d.rev) {
+      p.serverRev = d.rev;
+      p.syncedAt = Date.now();
+      lastSyncPayload = raw;
+      localStorage.setItem(STORE_KEY, JSON.stringify(store));
+    }
   } catch (e) {
     if (e.status === 409) await pullProgress(p.childId);
   }
@@ -573,6 +582,10 @@ function route() {
   const h = location.hash.replace(/^#/, '');
   const p = P();
   if (!p) { renderProfiles(); return; }
+  if (!window.__gradeFilterDone && !(window.PLATFORM && PLATFORM.user)) {
+    applyGradeFilter();
+    window.__gradeFilterDone = true;
+  }
   touchActivity();
   if (!h.startsWith('case/')) TL.curCase = null;
   if (!TL.logged) { TL.logged = true; TL.send('login', 'монет: ' + p.points + ', дел закрыто: ' + Object.keys(p.bosses).length); }
@@ -1966,7 +1979,7 @@ document.addEventListener('click', (ev) => {
       route();
       break;
     }
-    case 'pickProfile': store.currentId = arg; store.adminAuthed = false; saveStore(); location.hash = ''; route(); break;
+    case 'pickProfile': store.currentId = arg; store.adminAuthed = false; saveStore(); location.replace(location.pathname + '?cb=' + Date.now()); break;
     case 'pickEmoji': {
       const box = $('np-emoji');
       box.querySelectorAll('button').forEach(b => b.classList.remove('sel'));
