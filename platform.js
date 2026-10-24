@@ -17,7 +17,7 @@
 
   async function api(path, opts) {
     opts = opts || {};
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
     const t = getToken();
     if (t) headers['Authorization'] = 'Bearer ' + t;
     const res = await fetch(API + path, {
@@ -96,6 +96,37 @@
     },
     manifest: function (product) { return api('/manifest?product=' + encodeURIComponent(product) + '&t=' + Date.now()); },
     stage: function (product, id) { return api('/stage?product=' + encodeURIComponent(product) + '&id=' + encodeURIComponent(id) + '&t=' + Date.now()); },
+
+    /* ---------- семья ---------- */
+    parentToken: function () {
+      try {
+        const raw = sessionStorage.getItem('parentToken');
+        if (!raw) return '';
+        const o = JSON.parse(raw);
+        if (!o.token || o.exp < Date.now()) { sessionStorage.removeItem('parentToken'); return ''; }
+        return o.token;
+      } catch (e) { return ''; }
+    },
+    parentLogout: function () { try { sessionStorage.removeItem('parentToken'); } catch (e) {} },
+    family: function () { return api('/family?t=' + Date.now()); },
+    addChild: function (name, grade) { return api('/family/child', { method: 'POST', body: { name: name, grade: grade } }); },
+    editChild: function (id, patch) { return api('/family/child', { method: 'PATCH', body: Object.assign({ id: id }, patch || {}) }); },
+    setPin: function (password, pin) { return api('/family/pin', { method: 'POST', body: { password: password, pin: pin } }); },
+    verifyPin: async function (pin) {
+      const d = await api('/family/pin/verify', { method: 'POST', body: { pin: pin } });
+      try { sessionStorage.setItem('parentToken', JSON.stringify({ token: d.parentToken, exp: d.exp })); } catch (e) {}
+      return d;
+    },
+    resetPin: function (email, password, code, pin) {
+      return api('/family/pin/reset', { method: 'POST', body: { email: email, password: password, code: code, pin: pin } });
+    },
+    savePrizes: function (childId, prizes) {
+      return api('/family/prizes', { method: 'POST', body: { childId: childId, prizes: prizes }, headers: { 'X-Parent-Token': this.parentToken() } });
+    },
+    getProgress: function (childId) { return api('/family/progress?childId=' + encodeURIComponent(childId) + '&t=' + Date.now()); },
+    putProgress: function (childId, data, baseRev) {
+      return api('/family/progress', { method: 'PUT', body: { childId: childId, data: data, baseRev: baseRev || 0 } });
+    },
 
     /* ---------- UI ---------- */
     panelHtml: function () {
